@@ -2,7 +2,6 @@
  * 侧边栏入口「结构查看」。
  */
 import { mountSidebarEntry } from './sidebar-entry-core.ts'
-import css from './viewer.module.css'
 import type { PanelController } from './controller.ts'
 
 export const ENTRY_SELECTOR = '[data-castep-structure-entry]'
@@ -14,7 +13,7 @@ export function mountSidebarEntryRow(controller: PanelController): () => void {
     rowSelector: ENTRY_SELECTOR,
     plugin: 'castep-structure-viewer',
     icon: ICON,
-    css: css as unknown as Record<string, string>,
+    css: {} as Record<string, string>,
     label: () => '结构查看',
     tooltip: () => '查看 CASTEP 作业结构（初始→当前逐帧 + 播放）',
     onToggle: () => controller.toggle(),

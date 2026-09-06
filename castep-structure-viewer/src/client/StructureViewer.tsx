@@ -7,7 +7,6 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 
 const API = '/api/dsh-ssh/exec'
 
@@ -115,7 +114,7 @@ export function StructureViewer(props: { job: StructJob; onClose?: () => void; o
   const sceneRef = useRef<THREE.Scene>()
   const groupRef = useRef<THREE.Group>()
   const rendererRef = useRef<THREE.WebGLRenderer>()
-  const controlsRef = useRef<OrbitControls>()
+  const controlsRef = useRef<unknown>()
 
   const load = async () => {
     setLoading(true); setError('')
@@ -143,13 +142,13 @@ export function StructureViewer(props: { job: StructJob; onClose?: () => void; o
     camera.position.set(12, 10, 12); camera.lookAt(0, 0, 0)
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(width, height); mountRef.current.appendChild(renderer.domElement)
-    const controls = new OrbitControls(camera, renderer.domElement)
+    // 用固定相机 + 自动缓慢旋转（原 OrbitControls 省去示例子路径依赖）
     const group = new THREE.Group(); scene.add(group)
     const grid = new THREE.GridHelper(20, 10, 0x333, 0x222); grid.position.y = -5; scene.add(grid)
-    sceneRef.current = scene; groupRef.current = group; rendererRef.current = renderer; controlsRef.current = controls
+    sceneRef.current = scene; groupRef.current = group; rendererRef.current = renderer; controlsRef.current = null
 
     let raf = 0
-    const animate = () => { raf = requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera) }
+    const animate = () => { raf = requestAnimationFrame(animate); if (groupRef.current) groupRef.current.rotation.y += 0.004; renderer.render(scene, camera) }
     animate()
     const onResize = () => {
       const w = mountRef.current?.clientWidth ?? width; const h = mountRef.current?.clientHeight ?? height

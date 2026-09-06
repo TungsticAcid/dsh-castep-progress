@@ -1,2 +1,6 @@
-# 本插件仅浏览器端 client（侧边栏 + 居中面板），无需 host 侧扩展。
-extra: {}
+# castep-structure-viewer 插件挂载：注册浏览器端 client。
+- insert:
+    - id: castep-structure-viewer
+      name: '@smartcatai/castep-structure-viewer/client'
+      config:
+        plugin: '@smartcatai/castep-structure-viewer'

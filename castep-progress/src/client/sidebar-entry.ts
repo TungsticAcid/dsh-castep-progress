@@ -2,7 +2,6 @@
  * sidebar-entry.ts — 侧边栏入口（复用 dsh-ssh 的 sidebar-entry-core）。
  */
 import { mountSidebarEntry } from './sidebar-entry-core.ts'
-import css from './panel/castep.module.css'
 import type { PanelController } from './controller.ts'
 
 export const ENTRY_SELECTOR = '[data-castep-progress-entry]'
@@ -15,7 +14,7 @@ export function mountSidebarEntryRow(controller: PanelController): () => void {
     rowSelector: ENTRY_SELECTOR,
     plugin: 'castep-progress',
     icon: ICON,
-    css: css as unknown as Record<string, string>,
+    css: {} as Record<string, string>,
     label: () => 'CASTEP 进度',
     tooltip: () => '查看服务器上 CASTEP 作业的实时进度',
     onToggle: () => controller.toggle(),

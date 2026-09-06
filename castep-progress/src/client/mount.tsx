@@ -3,7 +3,6 @@
  */
 import { mountCenterPanel } from './panel-mount-core.ts'
 import { CastepProgressPanel } from './panel/CastepProgressPanel.tsx'
-import css from './panel/castep.module.css'
 import type { PanelController } from './controller.ts'
 
 export function mountPanel(controller: PanelController): () => void {
@@ -13,7 +12,7 @@ export function mountPanel(controller: PanelController): () => void {
     ),
     viewDatasetKey: 'castepProgressView',
     pluginName: 'castep-progress',
-    viewClassName: css.view,
+    viewClassName: "",
     activeAttribute: 'data-castep-progress-active',
     siblingActiveAttribute: 'data-dsh-ssh-active',
     panelName: 'castep-progress',

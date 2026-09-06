@@ -3,7 +3,6 @@
  */
 import { mountCenterPanel } from './panel-mount-core.ts'
 import { StructureViewer, type StructJob } from './StructureViewer.tsx'
-import css from './viewer.module.css'
 import type { PanelController } from './controller.ts'
 
 export type { StructJob }
@@ -34,7 +33,7 @@ export function mountPanel(controller: PanelController): () => void {
     render: (r) => { root = r; render() },
     viewDatasetKey: 'castepStructureView',
     pluginName: 'castep-structure-viewer',
-    viewClassName: css.view,
+    viewClassName: "",
     activeAttribute: 'data-castep-structure-active',
     siblingActiveAttribute: 'data-dsh-ssh-active',
     panelName: 'castep-structure-viewer',
