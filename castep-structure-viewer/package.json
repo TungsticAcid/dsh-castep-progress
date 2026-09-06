@@ -1,0 +1,29 @@
+{
+  "name": "@smartcatai/castep-structure-viewer",
+  "description": "DSH web 侧边栏插件：CASTEP 作业结构查看器（逐帧 + 播放动画），复用 @linxin666/dsh-ssh。",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
+    "./client": { "types": "./lib/types/client/index.d.ts", "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "engines": { "dsh": ">=0.1.2-rc.1" },
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "inject": [], "platform": "web" }
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "watch": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "Apache-2.0"
+}

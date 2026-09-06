@@ -1,0 +1,13 @@
+# 构建产物
+lib/
+dist/
+*.tgz
+
+# 依赖
+node_modules/
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

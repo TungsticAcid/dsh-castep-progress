@@ -1,0 +1,27 @@
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.entryIcon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.entryLabel {
+  font-size: 13px;
+}
+.view {
+  height: 100%;
+  overflow: auto;
+  background: var(--dsh-bg, #0d1117);
+  color: var(--dsh-fg, #e6edf3);
+  padding: 8px;
+}
