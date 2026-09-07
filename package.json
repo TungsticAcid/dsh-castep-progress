@@ -1,0 +1,5 @@
+{
+  "name": "smartcatai-dsh-plugins-build",
+  "private": true,
+  "type": "module"
+}

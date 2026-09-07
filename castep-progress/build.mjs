@@ -7,5 +7,4 @@ await build({
   platform: 'browser',
   target: 'es2020',
   jsx: 'automatic',
-  external: ['react', 'react-dom', 'react-dom/client'],
 })
