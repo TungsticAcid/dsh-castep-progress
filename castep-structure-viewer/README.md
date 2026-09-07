@@ -15,7 +15,7 @@ DSH web 插件：在 **dsh-better-sidebar 右侧面板**注册「结构查看」
   - `<job>.geom`：CASTEP 几何轨迹（含初始→当前每一帧的晶格 + 原子坐标）。
   - 若无 `.geom`，回退读 `<job>.cell`（单帧初始结构）。
 - 解析 `%BLOCK LATTICE_CART` + `%BLOCK POSITIONS_FRAC/ABS`（重复帧→分数坐标→笛卡尔），得 `frames[]`。
-- 渲染：原子球（近似 CPK 颜色）+ 晶胞框（LineSegments）+ 帧滑块 + 播放/暂停（≥2 帧）。相机为固定 + 自动缓速旋转（省去 three 示例子路径依赖，便于打包）。
+- 渲染：原子球（近似 CPK 颜色，可切换自定义颜色）+ 晶胞框（LineSegments）+ 帧滑块 + 播放/暂停（≥2 帧）。相机支持**自由平移/旋转/缩放**（拖动=旋转、Shift+拖动=平移、滚轮=缩放），背景色可调；用无光照 MeshBasicMaterial 保证颜色可见。
 
 ## 实现要点
 - `inject: ['betterSidebar']`；`apply` 用 `ctx.effect(() => ctx.betterSidebar.registerTab({ ... component }))`。
