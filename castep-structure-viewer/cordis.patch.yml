@@ -1,6 +1,6 @@
-# castep-structure-viewer 插件挂载：注册浏览器端 client。
+# 复用 dsh-web-all 的 bundle shell 来挂载 client（与 dsh-ssh 同机制）。
 - insert:
     - id: castep-structure-viewer
-      name: '@smartcatai/castep-structure-viewer/client'
+      name: '@linxin666/dsh-web-all/shell'
       config:
         plugin: '@smartcatai/castep-structure-viewer'

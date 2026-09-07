@@ -1,6 +1,8 @@
-# castep-progress 插件挂载：注册浏览器端 client。
+# 复用 dsh-web-all 的 bundle shell 来挂载 client（与 dsh-ssh 同机制）。
+# shell 会动态 import 插件包根（@smartcatai/castep-progress）并 ctx.plugin，
+# 从而在浏览器端真正挂载 sidebar/面板，Node 组合阶段由 apply 内部 try/catch 兜底。
 - insert:
     - id: castep-progress
-      name: '@smartcatai/castep-progress/client'
+      name: '@linxin666/dsh-web-all/shell'
       config:
         plugin: '@smartcatai/castep-progress'
