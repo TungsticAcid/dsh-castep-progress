@@ -92,8 +92,8 @@ async function collectJobs(alias: string, extraBases: string[]): Promise<JobInfo
 type SortKey = 'job' | 'status' | 'ion' | 'scf' | 'energy'
 const STATUS_COLORS: Record<string, string> = { completed: 'green', running: '#b8860b', error: 'red', stopped: '#8b949e' }
 
-export function CastepProgressPanel(props: { onClose?: () => void }) {
-  const { onClose } = props
+export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructure?: (job: { server: string; job: string; remoteDir: string }) => void }) {
+  const { onClose, onOpenStructure } = props
   const [hosts, setHosts] = useState<{ alias: string; user?: string }[]>([])
   const [alias, setAlias] = useState('')
   const [jobs, setJobs] = useState<JobInfo[]>([])
@@ -209,7 +209,8 @@ export function CastepProgressPanel(props: { onClose?: () => void }) {
             <tr key={j.tag} title="点击查看结构（初始→当前逐帧 + 播放动画）"
                 style={{ borderTop: '1px solid #30363d', cursor: 'pointer' }}
                 onClick={() => {
-                  window.dispatchEvent(new CustomEvent(OPEN_STRUCTURE_EVENT, { detail: { server: alias, job: j.job, remoteDir: j.remote } }))
+                  if (onOpenStructure) onOpenStructure({ server: alias, job: j.job, remoteDir: j.remote })
+                  else window.dispatchEvent(new CustomEvent(OPEN_STRUCTURE_EVENT, { detail: { server: alias, job: j.job, remoteDir: j.remote } }))
                 }}>
               <td>{j.job}</td>
               <td style={{ color: STATUS_COLORS[j.status] || 'gray' }}>{j.status}</td>

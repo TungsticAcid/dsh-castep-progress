@@ -1,44 +1,41 @@
 /**
  * index.ts — 结构查看器插件入口。
- * 监听进度插件派发的 'castep-open-structure' 事件，打开面板展示结构。
- *
- * ★ Node 宿主安全：DSH 会在 Node 里执行 apply()（校验/组合），
- *   所有 window/document 相关操作必须包在 typeof guard 内，
- *   否则 Node 下 window 未定义会抛错导致 dsh web 启动失败。
+ * 向 dsh-better-sidebar 注册「结构查看」Tab（右侧面板）。
+ * 由 CASTEP 进度 Tab 通过 service.openTab({type:'castep-structure-viewer', meta:{server,job,remoteDir}})
+ * 打开，并从 tab.meta 读取作业。
+ * Node 组合阶段用可选链 + try/catch 保证不抛错。
  */
+import { createElement as h } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import { PanelController } from './controller.ts'
-import { mountSidebarEntryRow } from './sidebar-entry.ts'
-import { mountPanel, setJob, type StructJob } from './mount.tsx'
+import { StructureViewer } from './StructureViewer.tsx'
 
 export const inject: string[] = []
-export type { StructJob }
 
-const OPEN_STRUCTURE_EVENT = 'castep-open-structure'
+const ICON = h('svg', { viewBox: '0 0 16 16', width: 18, height: 18, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+  h('circle', { cx: 4, cy: 4, r: 1.6 }),
+  h('circle', { cx: 11, cy: 6, r: 1.6 }),
+  h('circle', { cx: 6, cy: 12, r: 1.6 }),
+  h('line', { x1: 5.3, y1: 5, x2: 9.7, y2: 5.9 }),
+  h('line', { x1: 6.1, y1: 10.7, x2: 10, y2: 7.1 }),
+)
 
-export function apply(_ctx: ClientContext): void {
-  const controller = new PanelController()
-  const disposers: Array<() => void> = []
-  // DOM 面板挂载用 try/catch：Node 里 document 未定义 → 只告警不抛出。
+export function apply(ctx: ClientContext): void {
+  const service = (ctx as any).betterSidebar
+  if (!service) return
   try {
-    disposers.push(mountSidebarEntryRow(controller))
-    disposers.push(mountPanel(controller))
+    service.registerTab({
+      id: 'castep-structure-viewer',
+      title: '结构查看',
+      icon: ICON,
+      single: true,
+      order: 51,
+      component: (props: { tab?: any; visible: boolean }) => h(StructureViewer, {
+        job: (props.tab?.meta as any) ?? null,
+        onClose: () => service.closeTab?.(props.tab?.id),
+        onBack: () => service.closeTab?.(props.tab?.id),
+      }),
+    })
   } catch (e) {
-    console.warn('[castep-structure-viewer] mount failed:', e)
-  }
-
-  // 事件监听只在浏览器里挂（Node 下跳过快照，避免 window is not defined）。
-  if (typeof window !== 'undefined') {
-    const onOpen = (e: Event) => {
-      const detail = (e as CustomEvent).detail as StructJob | undefined
-      if (!detail) return
-      setJob(detail)
-      controller.openPanel()
-    }
-    window.addEventListener(OPEN_STRUCTURE_EVENT, onOpen)
-    _ctx.effect?.(() => () => {
-      window.removeEventListener(OPEN_STRUCTURE_EVENT, onOpen)
-      for (const d of disposers.splice(0)) d()
-    }, 'castep-structure-viewer: ui mounts')
+    console.warn('[castep-structure-viewer] better-sidebar registerTab failed:', e)
   }
 }

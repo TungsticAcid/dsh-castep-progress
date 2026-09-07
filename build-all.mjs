@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 const targets = [
-  { entry: 'castep-progress.bak/src/client/index.ts', out: 'castep-progress.bak/lib/client.js' },
-  { entry: 'castep-structure-viewer.bak/src/client/index.ts', out: 'castep-structure-viewer.bak/lib/client.js' },
+  { entry: 'castep-progress/src/client/index.ts', out: 'castep-progress/lib/client.js' },
+  { entry: 'castep-structure-viewer/src/client/index.ts', out: 'castep-structure-viewer/lib/client.js' },
 ]
 for (const t of targets) {
   await build({

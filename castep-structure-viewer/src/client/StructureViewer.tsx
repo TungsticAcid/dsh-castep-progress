@@ -103,8 +103,9 @@ function cellEdges(cell: number[][]): number[][] {
   return idx.map(([i,j]) => [P[i], P[j]])
 }
 
-export function StructureViewer(props: { job: StructJob; onClose?: () => void; onBack?: () => void }) {
+export function StructureViewer(props: { job: StructJob | null; onClose?: () => void; onBack?: () => void }) {
   const { job, onClose, onBack } = props
+  const noJob = !job || !job.job
   const mountRef = useRef<HTMLDivElement>(null)
   const [frames, setFrames] = useState<Frame[]>([])
   const [frame, setFrame] = useState(0)
@@ -131,7 +132,7 @@ export function StructureViewer(props: { job: StructJob; onClose?: () => void; o
     } catch (e: any) { setError(String(e?.message ?? e)) }
     setLoading(false)
   }
-  useEffect(() => { load() }, [job.job, job.remoteDir, job.server])
+  useEffect(() => { if (noJob) { setFrames([]); setLoading(false); return } load() }, [job?.job, job?.remoteDir, job?.server])
 
   // 初始化 three.js 场景
   useEffect(() => {
@@ -184,6 +185,16 @@ export function StructureViewer(props: { job: StructJob; onClose?: () => void; o
     const id = setInterval(() => setFrame(fr => (fr + 1) % frames.length), 400)
     return () => clearInterval(id)
   }, [play, frames.length])
+
+  if (noJob) {
+    return (
+      <div style={{ fontFamily: "Consolas, monospace", padding: 8 }}>
+        <h2 style={{ margin: 0 }}>结构查看</h2>
+        <p style={{ opacity: 0.7 }}>先在「CASTEP 进度」里点一个作业，即可查看其结构（初始→当前逐帧 + 播放）。</p>
+        {onClose && <button onClick={onClose}>‹ 关闭</button>}
+      </div>
+    )
+  }
 
   return (
     <div style={{ fontFamily: 'Consolas, monospace', padding: 8 }}>
