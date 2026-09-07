@@ -7,11 +7,13 @@ This repository contains two DSH web client plugins:
 
 Third-party acknowledgements
 ----------------------------
-- `@linxin666/dsh-ssh` (Apache-2.0)
-  - These plugins talk to the DSH loopback HTTP API `/api/dsh-ssh/*`
-    (exec / hosts) provided by `@linxin666/dsh-ssh` (part of @linxin666/dsh-web-all).
-  - `src/client/sidebar-entry-core.ts` and `src/client/panel-mount-core.ts`
-    in both plugins are synced copies from that package (Apache-2.0).
+- `@linxin666/dsh-ssh` (Apache-2.0, part of @linxin666/dsh-web-all)
+  - Both plugins talk to the DSH loopback HTTP API `/api/dsh-ssh/*`
+    (exec / hosts) provided by `@linxin666/dsh-ssh`.
+
+- `dsh-better-sidebar` (MIT)
+  - Both plugins register their UI as Tabs into `ctx.betterSidebar`
+    (the right-sidebar panel provided by dsh-better-sidebar).
 
 - `three.js` (MIT License)
   - Used by `@smartcatai/castep-structure-viewer` for 3D structure rendering.

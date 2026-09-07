@@ -1,46 +1,49 @@
-# CASTEP 结构查看器插件（@smartcatai/castep-structure-viewer）
+# CASTEP 结构查看器 Tab（@smartcatai/castep-structure-viewer）
 
-DSH web **侧边栏插件**：查看 CASTEP 作业的结构，支持**从初始到当前逐帧 + 播放动画**。渲染用 three.js，思路参考 [Symmetry Viewer `H5/`](../Symmetry%20Viewer/H5)（`render/scene-builder.js` 的球棍/晶体渲染）。
+DSH web 插件：在 **dsh-better-sidebar 右侧面板**注册「结构查看」Tab，用于查看 CASTEP 作业结构，支持**从初始到当前逐帧 + 播放动画**。渲染用 three.js，思路参考 [Symmetry Viewer `H5/`](../Symmetry%20Viewer/H5)。
 
-## 触发方式
-- 自己在侧边栏点「结构查看」打开空面板。
-- 在 **CASTEP 进度插件**里点击某个作业行，进度插件会派发 `window` 上的 `castep-open-structure` 事件：
+## 触发
+- **常规**：在「CASTEP 进度」Tab 里点某个作业行 → 进度插件调用
   ```js
-  { detail: { server, job, remoteDir } }
+  ctx.betterSidebar.openTab({ type: 'castep-structure-viewer', title: job, meta: { server, job, remoteDir } })
   ```
-  本插件监听该事件 → 记录任务 → 打开面板并加载结构。
+  本 Tab 从 `tab.meta` 读取作业并加载结构。
+- **直接打开**：从「+ 添加 Tab 插件」打开该 Tab；若尚无 `meta` 会显示占位提示，先去进度 Tab 点一个作业。
 
 ## 数据来源 / 结构解析
-- 复用 `@linxin666/dsh-ssh` 的同源 `/api/dsh-ssh/exec`，在 `remoteDir` 里读取：
+- 复用 `@linxin666/dsh-ssh` 的同源 `/api/dsh-ssh/exec`：
   - `<job>.geom`：CASTEP 几何轨迹（含初始→当前每一帧的晶格 + 原子坐标）。
-  - 若没有 `.geom`，回退读 `<job>.cell`（单帧初始结构）。
-- 解析 `%BLOCK LATTICE_CART` + `%BLOCK POSITIONS_FRAC/ABS`（重复出现的帧），分数坐标→笛卡尔，得到 `frames[]`。
-- 渲染：原子球（元素近似 CPK 颜色）+ 晶胞框（`LineSegments`）+ 帧滑块 + 播放/暂停（>=2 帧）。
+  - 若无 `.geom`，回退读 `<job>.cell`（单帧初始结构）。
+- 解析 `%BLOCK LATTICE_CART` + `%BLOCK POSITIONS_FRAC/ABS`（重复帧→分数坐标→笛卡尔），得 `frames[]`。
+- 渲染：原子球（近似 CPK 颜色）+ 晶胞框（LineSegments）+ 帧滑块 + 播放/暂停（≥2 帧）。相机为固定 + 自动缓速旋转（省去 three 示例子路径依赖，便于打包）。
+
+## 实现要点
+- `inject: ['betterSidebar']`；`apply` 用 `ctx.effect(() => ctx.betterSidebar.registerTab({ ... component }))`。
+- 客户端 `lib/client.js` 由 `build-all.mjs` 产出：esbuild CJS → **`window.__ModuleLoader__.load({ id, factory })`** 包装，factory 末尾 `return module.exports`。
+- **`three` 打进 bundle**；`react/react-dom` 作为 peer 由 dsh web 提供（避免双 React）。
+- 宿主根 `lib/index.js` 为空壳（Node 下 no-op）。
 
 ## 结构
 ```
-plugins/castep-structure-viewer/
+castep-structure-viewer/
   package.json
   cordis.patch.yml
-  src/client/
-    index.ts                    # apply：监听事件 + 挂侧边栏入口/面板
-    controller.ts               # 面板开关
-    sidebar-entry.ts            # 侧边栏入口（复用 sidebar-entry-core）
-    mount.tsx                   # 居中面板 + setJob() 重渲染
-    sidebar-entry-core.ts       # 从 dsh-ssh 复制的公共核心
-    panel-mount-core.ts         # 从 dsh-ssh 复制的公共核心
-    StructureViewer.tsx         # three.js 渲染 + 逐帧/动画
-    viewer.module.css
+  build.mjs
+  lib/
+    index.js                  # 宿主(Node) 空壳
+    client.js                 # 浏览器端，__ModuleLoader__ 包装（含 three）
+  src/client/index.ts         # apply(): ctx.betterSidebar.registerTab(...)
+  src/client/StructureViewer.tsx
 ```
 
-## 安装
-与进度插件一致：`dsh plugin --profile web add <本目录>` → 构建（`pnpm --filter @smartcatai/castep-structure-viewer build`）→ 重启 `dsh web`。
+## 构建 / 安装
+同进度插件：在 `dsh/plugins` 根 `node build-all.mjs` → `dsh plugin --profile web add <本目录绝对路径>` → 重启 `dsh web` + 硬刷新浏览器。前提：已装 `@linxin666/dsh-ssh` 与 `dsh-better-sidebar`。
 
 ## 依赖/前提
-- 已装 `@linxin666/dsh-ssh`（用其 `/api/dsh-ssh/exec`）。
-- `three`（已在 package.json dependencies）。
-- 与「CASTEP 进度」插件配合：进度插件点击作业行会派发 `castep-open-structure`。
+- `@linxin666/dsh-ssh`（用 `/api/dsh-ssh/exec`）。
+- `three`（作为 dependency 打进 bundle）。
+- `dsh-better-sidebar`（提供右侧面板与 `ctx.betterSidebar` 服务）。
 
 ## 说明
-- 结构解析/渲染为 three.js 版本，未做原子拾取/标签等高级功能；如需要可再借鉴 Symmetry Viewer 的 `scene-builder.js`（球棍/CPK/晶胞）与 `viewer.js` 交互。
+- 未做原子拾取/标签等高级功能；如需要可再借鉴 Symmetry Viewer 的 `scene-builder.js`（球棍/CPK/晶胞）与 `viewer.js` 交互。
 - 只读，不修改服务器文件。
