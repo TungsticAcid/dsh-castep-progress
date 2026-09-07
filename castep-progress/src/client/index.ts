@@ -10,7 +10,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { CastepProgressPanel } from './panel/CastepProgressPanel.tsx'
 
 /** 需要等待的服务（better-sidebar 提供右侧面板槽位）。 */
-export const inject: string[] = []
+export const inject: string[] = ['betterSidebar']
 
 const ICON = h('svg', { viewBox: '0 0 16 16', width: 18, height: 18, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
   h('path', { d: 'M2 4.5h12M2 8h12M2 11.5h8' }),

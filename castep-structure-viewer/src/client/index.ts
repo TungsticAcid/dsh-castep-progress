@@ -9,7 +9,7 @@ import { createElement as h } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { StructureViewer } from './StructureViewer.tsx'
 
-export const inject: string[] = []
+export const inject: string[] = ['betterSidebar']
 
 const ICON = h('svg', { viewBox: '0 0 16 16', width: 18, height: 18, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
   h('circle', { cx: 4, cy: 4, r: 1.6 }),
