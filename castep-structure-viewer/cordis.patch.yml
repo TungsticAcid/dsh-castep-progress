@@ -1,6 +1,4 @@
-# 复用 dsh-web-all 的 bundle shell 来挂载 client（与 dsh-ssh 同机制）。
+# 直接挂本包名：加载器据 dsh.client.platform=web 同时加载 宿主根(lib/index.js 空壳) 与 /client(浏览器)。
 - insert:
     - id: castep-structure-viewer
-      name: '@linxin666/dsh-web-all/shell'
-      config:
-        plugin: '@smartcatai/castep-structure-viewer'
+      name: '@smartcatai/castep-structure-viewer'

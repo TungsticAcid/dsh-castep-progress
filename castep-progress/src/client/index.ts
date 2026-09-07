@@ -1,15 +1,14 @@
 /**
- * index.ts — 浏览器端插件入口（DSH client plugin）。
- * 向 dsh-better-sidebar 注册一个「CASTEP 进度」Tab（出现在右侧面板），
- * 复用 @linxin666/dsh-ssh 的同源接口采集数据。
- * Node 组合阶段：apply 会被调用，但 betterSidebar 可能无浏览器 DOM；
- * 我们用可选链 + try/catch 保证 Node 下不抛错、浏览器下正常挂载。
+ * index.ts — 浏览器端(client)插件入口。
+ * 向 dsh-better-sidebar 注册「CASTEP 进度」Tab（右侧面板）。
+ * ★ 必须用 ctx.effect 包裹 registerTab（返回的 disposer 由 cordis 在 fiber 释放时自动调用）。
  */
 import { createElement as h } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+/** 触发 dsh-better-sidebar 的类型合并（运行时无副作用）。 */
+import type {} from 'dsh-better-sidebar'
 import { CastepProgressPanel } from './panel/CastepProgressPanel.tsx'
 
-/** 需要等待的服务（better-sidebar 提供右侧面板槽位）。 */
 export const inject: string[] = ['betterSidebar']
 
 const ICON = h('svg', { viewBox: '0 0 16 16', width: 18, height: 18, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
@@ -23,18 +22,18 @@ export function apply(ctx: ClientContext): void {
   const service = (ctx as any).betterSidebar
   if (!service) return
   try {
-    service.registerTab({
+    ctx.effect?.(() => service.registerTab({
       id: 'castep-progress',
       title: 'CASTEP 进度',
       icon: ICON,
       single: true,
       order: 50,
-      component: (props: { visible: boolean }) => h(CastepProgressPanel, {
+      component: () => h(CastepProgressPanel, {
         onOpenStructure: (job: JobRef) => {
           service.openTab({ type: 'castep-structure-viewer', title: job.job, meta: job })
         },
       }),
-    })
+    }))
   } catch (e) {
     console.warn('[castep-progress] better-sidebar registerTab failed:', e)
   }

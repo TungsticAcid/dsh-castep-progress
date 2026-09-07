@@ -5,7 +5,7 @@
   "type": "module",
   "exports": {
     ".": {
-      "default": "./lib/client.js"
+      "default": "./lib/index.js"
     },
     "./client": {
       "default": "./lib/client.js"

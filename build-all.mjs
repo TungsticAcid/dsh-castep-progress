@@ -12,6 +12,8 @@ for (const t of targets) {
     platform: 'browser',
     target: 'es2020',
     jsx: 'automatic',
+    // react/react-dom 作为 peer 由 dsh web 应用提供（避免双 React）；three 会打进结构查看器包。
+    external: ['react', 'react-dom', 'react-dom/client'],
   })
   console.log('built', t.out)
 }
