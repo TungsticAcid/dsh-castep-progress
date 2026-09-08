@@ -1,12 +1,12 @@
 /**
  * StructureViewer.tsx — CASTEP 结构查看器（three.js）
  *
- * 复用 dsh-ssh 插件的 `/api/dsh-ssh/exec` 读取远程 `.geom`（几何轨迹，含
- * 初始→当前每帧），解析逐帧结构并用 three.js 渲染原子球 + 晶胞框。
- * 提供帧滑块 + 播放/暂停动画；自由平移/旋转/缩放；背景色与原子着色可调。
- * 渲染思路参考 Symmetry Viewer（H5，three.js）。
+ * 复用 dsh-ssh 插件的 `/api/dsh-ssh/exec` 读取远程 `.geom`（固定格式轨迹：
+ * 每帧以 `<-- c` 行开始，含 `h`(晶格) / `R`(原子坐标) / `F`(力)），解析
+ * 逐帧结构并渲染原子球 + 晶胞框。提供帧滑块 + 播放/暂停；正交投影；
+ * 左键旋转、中/右键或 Shift+左键平移、滚轮缩放；背景色与逐元素配色可调。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 
 const API = '/api/dsh-ssh/exec'
@@ -33,50 +33,58 @@ const ELEM: Record<string, string> = {
   Zn: '#7d80b0'
 }
 
+const DEFAULT_BG = '#0d1117'
+
+/** 解析 CASTEP 固定格式 .geom 轨迹（逐帧）。 */
 function parseGeomFrames(text: string): Frame[] {
-  const latBlocks: number[][][] = []
-  const posBlocks: { element: string; frac: number[] }[][] = []
-  const latRe = /%BLOCK LATTICE_CART\s+([\s\S]+?)%ENDBLOCK LATTICE_CART/g
-  const fracRe = /%BLOCK POSITIONS_FRAC\s+([\s\S]+?)%ENDBLOCK POSITIONS_FRAC/g
-  const absRe = /%BLOCK POSITIONS_ABS\s+([\s\S]+?)%ENDBLOCK POSITIONS_ABS/g
-
-  let m: RegExpExecArray | null
-  while ((m = latRe.exec(text))) latBlocks.push(parseLattice(m[1]))
-  while ((m = fracRe.exec(text))) posBlocks.push(parsePositions(m[1]))
-  while ((m = absRe.exec(text))) posBlocks.push(parsePositions(m[1]))
-
-  if (posBlocks.length === 0) return []
   const frames: Frame[] = []
-  for (let i = 0; i < posBlocks.length; i++) {
-    const cell = latBlocks[i] ?? latBlocks[0] ?? [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    const atoms = posBlocks[i].map(a => ({ element: a.element, xyz: fracToCart(a.frac, cell) }))
-    frames.push({ cell, atoms })
+  let cur: Frame | null = null
+  let cellRows: number[][] = []
+  for (const raw of text.split('\n')) {
+    const ln = raw.trim()
+    if (ln.endsWith('<-- c')) {
+      if (cur) frames.push(cur)
+      cur = { cell: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], atoms: [] }
+      cellRows = []
+      continue
+    }
+    if (!cur) continue
+    if (ln.endsWith('<-- h')) {
+      const nums = ln.replace('<-- h', '').trim().split(/\s+/).map(Number).filter(n => Number.isFinite(n))
+      if (nums.length >= 3 && cellRows.length < 3) cellRows.push(nums.slice(0, 3))
+      if (cellRows.length === 3) cur.cell = cellRows
+    } else if (ln.endsWith('<-- R')) {
+      const parts = ln.replace('<-- R', '').trim().split(/\s+/)
+      if (parts.length >= 5) {
+        const xyz = parts.slice(2, 5).map(Number)
+        if (xyz.every(n => Number.isFinite(n))) cur.atoms.push({ element: parts[0], xyz })
+      }
+    }
   }
-  return frames
+  if (cur) frames.push(cur)
+  return frames.filter(f => f.atoms.length > 0)
 }
 
-function parseLattice(s: string): number[][] {
-  const rows: number[][] = []
-  for (const ln of s.split('\n')) {
-    const t = ln.trim()
-    if (!t || t.startsWith('%')) continue
-    const nums = t.split(/\s+/).map(Number).filter(n => Number.isFinite(n))
-    if (nums.length >= 3) rows.push(nums.slice(0, 3))
-    if (rows.length === 3) break
+/** 解析 .cell（%BLOCK 格式）成单帧。 */
+function parseCellFrames(text: string): Frame[] {
+  const lat = /%BLOCK LATTICE_CART\s+([\s\S]+?)%ENDBLOCK LATTICE_CART/.exec(text)
+  const pos = /%BLOCK POSITIONS_FRAC\s+([\s\S]+?)%ENDBLOCK POSITIONS_FRAC/.exec(text) || /%BLOCK POSITIONS_ABS\s+([\s\S]+?)%ENDBLOCK POSITIONS_ABS/.exec(text)
+  if (!pos) return []
+  let cell: number[][] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+  if (lat) {
+    cell = lat[1].split('\n').map(l => l.trim().split(/\s+/).map(Number)).filter(r => r.length >= 3).slice(0, 3).map(r => r.slice(0, 3))
   }
-  return rows.length === 3 ? rows : [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-}
-
-function parsePositions(s: string): { element: string; frac: number[] }[] {
-  const atoms: { element: string; frac: number[] }[] = []
-  for (const ln of s.split('\n')) {
-    const t = ln.trim()
+  const abs = /%BLOCK POSITIONS_ABS/.test(pos[0])
+  const atoms: { element: string; xyz: number[] }[] = []
+  for (const l of pos[1].split('\n')) {
+    const t = l.trim()
     if (!t || t.startsWith('%')) continue
-    const parts = t.split(/\s+/)
-    if (parts.length < 4) continue
-    atoms.push({ element: parts[0], frac: parts.slice(1, 4).map(Number) })
+    const p = t.split(/\s+/)
+    if (p.length < 4) continue
+    const xyz = p.slice(1, 4).map(Number)
+    atoms.push({ element: p[0], xyz: abs ? xyz : fracToCart(xyz, cell) })
   }
-  return atoms
+  return atoms.length ? [{ cell, atoms }] : []
 }
 
 function fracToCart(frac: number[], cell: number[][]): number[] {
@@ -88,7 +96,7 @@ function fracToCart(frac: number[], cell: number[][]): number[] {
   ]
 }
 
-/** 晶胞 8 个角：0=(0,0,0) 1=a 2=a+b 3=b 4=c 5=a+c 6=b+c 7=a+b+c */
+/** 晶胞 8 个角。 */
 function cellCorners(cell: number[][]): number[][] {
   const [a, b, c] = cell
   const add = (p: number[], q: number[]) => [p[0]+q[0], p[1]+q[1], p[2]+q[2]]
@@ -102,9 +110,9 @@ function cellCorners(cell: number[][]): number[][] {
 function cellEdges(cell: number[][]): [number[], number[]][] {
   const P = cellCorners(cell)
   const idx: [number, number][] = [
-    [0, 1], [1, 2], [2, 3], [3, 0],   // bottom
-    [4, 5], [5, 7], [7, 6], [6, 4],   // top (c, a+c, a+b+c, b+c)
-    [0, 4], [1, 5], [2, 7], [3, 6],   // vertical
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 7], [7, 6], [6, 4],
+    [0, 4], [1, 5], [2, 7], [3, 6],
   ]
   return idx.map(([i, j]) => [P[i], P[j]])
 }
@@ -118,37 +126,39 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
   const [error, setError] = useState('')
   const [play, setPlay] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [bgColor, setBgColor] = useState('#0d1117')
-  const [atomMode, setAtomMode] = useState<'cpk' | 'custom'>('cpk')
-  const [atomColor, setAtomColor] = useState('#3d9b5c')
+  const [bgColor, setBgColor] = useState(DEFAULT_BG)
+  const [showGrid, setShowGrid] = useState(false)
+  const [elemColors, setElemColors] = useState<Record<string, string>>({ ...ELEM })
+  const [customElem, setCustomElem] = useState<Record<string, string>>({})
   const sceneRef = useRef<THREE.Scene>()
   const groupRef = useRef<THREE.Group>()
+  const gridRef = useRef<THREE.GridHelper | null>(null)
+  const cameraRef = useRef<THREE.OrthographicCamera | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer>()
+
+  const presentElems = useMemo(() => Array.from(new Set(frames.flatMap(f => f.atoms.map(a => a.element)))).sort(), [frames])
+  const atomColor = (el: string) => customElem[el] || elemColors[el] || '#9aa0a6'
 
   const load = async () => {
     setLoading(true); setError('')
     try {
-      let text = await exec(job.server, `cat ${job.remoteDir}/${job.job}.geom 2>/dev/null`)
-      let fs = parseGeomFrames(text)
-      if (fs.length === 0) {
-        const cell = await exec(job.server, `cat ${job.remoteDir}/${job.job}.cell 2>/dev/null`)
-        fs = parseGeomFrames(cell)
-      }
+      let fs = parseGeomFrames(await exec(job.server, `cat ${job.remoteDir}/${job.job}.geom 2>/dev/null`))
+      if (fs.length === 0) fs = parseCellFrames(await exec(job.server, `cat ${job.remoteDir}/${job.job}.cell 2>/dev/null`))
       setFrames(fs); setFrame(0)
     } catch (e: any) { setError(String(e?.message ?? e)) }
     setLoading(false)
   }
   useEffect(() => { if (noJob) { setFrames([]); setLoading(false); return } load() }, [job?.job, job?.remoteDir, job?.server])
 
-  // 初始化 three.js 场景 + 轻量轨道相机（自由平移/旋转/缩放）
   useEffect(() => {
     if (!mountRef.current) return
     const el = mountRef.current
-    const width = el.clientWidth; const height = el.clientHeight
+    const width = el.clientWidth, height = el.clientHeight
     const scene = new THREE.Scene(); scene.background = new THREE.Color(bgColor)
-    const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 200)
+    const frustum = 8
+    const camera = new THREE.OrthographicCamera(-frustum*width/height, frustum*width/height, frustum, -frustum, 0.01, 500)
     const target = new THREE.Vector3(0, 0, 0)
-    const sph = new THREE.Spherical().setFromVector3(new THREE.Vector3(12, 10, 12).sub(target))
+    const sph = new THREE.Spherical().setFromVector3(new THREE.Vector3(16, 13, 16).sub(target))
     const applyCam = () => {
       camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(sph))
       camera.lookAt(target)
@@ -157,19 +167,25 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(width, height); el.appendChild(renderer.domElement)
     const group = new THREE.Group(); scene.add(group)
-    const grid = new THREE.GridHelper(20, 10, 0x333, 0x222); grid.position.y = -5; scene.add(grid)
-    sceneRef.current = scene; groupRef.current = group; rendererRef.current = renderer
+    const grid = new THREE.GridHelper(20, 10, 0x333, 0x222); grid.position.y = -6; grid.visible = showGrid; scene.add(grid)
+    cameraRef.current = camera; sceneRef.current = scene; groupRef.current = group; gridRef.current = grid; rendererRef.current = renderer
 
-    // 手动 orbit：拖动=旋转，Shift+拖动=平移，滚轮=缩放
-    let dragging = false, panning = false, lastX = 0, lastY = 0
-    const onDown = (e: MouseEvent) => { dragging = true; panning = e.shiftKey; lastX = e.clientX; lastY = e.clientY }
+    let dragging = false, mode: 'rotate' | 'pan' = 'rotate', lastX = 0, lastY = 0
+    const onDown = (e: MouseEvent) => {
+      if (e.button === 0 && !e.shiftKey) mode = 'rotate'
+      else if (e.button === 0 && e.shiftKey) mode = 'pan'
+      else if (e.button === 1 || e.button === 2) mode = 'pan'
+      else return
+      dragging = true; lastX = e.clientX; lastY = e.clientY
+      if (e.button === 2 || e.button === 1) e.preventDefault()
+    }
     const onMove = (e: MouseEvent) => {
       if (!dragging) return
       const dx = e.clientX - lastX, dy = e.clientY - lastY; lastX = e.clientX; lastY = e.clientY
-      if (panning) {
+      if (mode === 'pan') {
         const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0)
         const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1)
-        const k = sph.radius * 0.0012
+        const k = (frustum * 2) / camera.zoom * 0.002
         target.add(right.multiplyScalar(-dx * k)).add(up.multiplyScalar(dy * k))
       } else {
         sph.theta -= dx * 0.01
@@ -178,12 +194,9 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
       applyCam()
     }
     const onUp = () => { dragging = false }
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      sph.radius = Math.max(1, Math.min(120, sph.radius * (e.deltaY > 0 ? 1.1 : 0.9)))
-      applyCam()
-    }
+    const onWheel = (e: WheelEvent) => { e.preventDefault(); camera.zoom = Math.max(0.2, Math.min(8, camera.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); camera.updateProjectionMatrix() }
     el.addEventListener('mousedown', onDown)
+    el.addEventListener('contextmenu', e => e.preventDefault())
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -193,32 +206,30 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
     animate()
     const onResize = () => {
       const w = el.clientWidth, h = el.clientHeight
-      camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setSize(w, h)
+      camera.left = -frustum*w/h; camera.right = frustum*w/h; camera.top = frustum; camera.bottom = -frustum
+      camera.updateProjectionMatrix(); renderer.setSize(w, h)
     }
     window.addEventListener('resize', onResize)
     return () => {
       cancelAnimationFrame(raf)
       el.removeEventListener('mousedown', onDown)
+      el.removeEventListener('contextmenu', () => {})
       el.removeEventListener('wheel', onWheel)
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      window.removeEventListener('resize', onResize)
+      window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); window.removeEventListener('resize', onResize)
       renderer.dispose(); el.removeChild(renderer.domElement)
     }
   }, [])
 
-  // 背景色可调
   useEffect(() => { if (sceneRef.current) sceneRef.current.background = new THREE.Color(bgColor) }, [bgColor])
+  useEffect(() => { if (gridRef.current) gridRef.current.visible = showGrid }, [showGrid])
 
-  // 渲染当前帧（原子用无光照 MeshBasicMaterial，保证 CPK/自定义颜色可见）
   useEffect(() => {
     const group = groupRef.current; if (!group) return
     while (group.children.length) { const c = group.children.pop()!; c.traverse(o => { if (o instanceof THREE.Mesh) (o.material as THREE.Material).dispose?.(); if (o instanceof THREE.Mesh) (o.geometry as THREE.Geometry).dispose?.() }) }
     const f = frames[frame]; if (!f) return
     const sphereGeom = new THREE.SphereGeometry(1, 24, 24)
     for (const a of f.atoms) {
-      const color = atomMode === 'custom' ? atomColor : (ELEM[a.element] ?? '#9aa0a6')
-      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color) })
+      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(atomColor(a.element)) })
       const mesh = new THREE.Mesh(sphereGeom, mat)
       mesh.position.set(a.xyz[0], a.xyz[1], a.xyz[2]); mesh.scale.setScalar(0.5)
       group.add(mesh)
@@ -228,9 +239,8 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
       const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...p), new THREE.Vector3(...q)])
       group.add(new THREE.Line(geo, lineMat))
     }
-  }, [frames, frame, atomMode, atomColor])
+  }, [frames, frame, customElem, elemColors])
 
-  // 播放动画
   useEffect(() => {
     if (!play || frames.length < 2) return
     const id = setInterval(() => setFrame(fr => (fr + 1) % frames.length), 400)
@@ -261,14 +271,17 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
         <button onClick={() => setFrame(fr => Math.min(frames.length - 1, fr + 1))} disabled={frame >= frames.length - 1}>下一帧</button>
         <button onClick={load}>重新加载</button>
         <label>背景 <input type="color" value={bgColor} onChange={e => setBgColor(e.target.value)} /></label>
-        <label>原子
-          <select value={atomMode} onChange={e => setAtomMode(e.target.value as 'cpk' | 'custom')}>
-            <option value="cpk">CPK 元素色</option>
-            <option value="custom">自定义</option>
-          </select>
-          {atomMode === 'custom' && <input type="color" value={atomColor} onChange={e => setAtomColor(e.target.value)} />}
-        </label>
+        <label><input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)} /> 网格</label>
       </div>
+      {presentElems.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+          {presentElems.map(el => (
+            <label key={el} title={`${el} 颜色`}>
+              {el} <input type="color" value={customElem[el] || atomColor(el)} onChange={e => setCustomElem(s => ({ ...s, [el]: e.target.value }))} />
+            </label>
+          ))}
+        </div>
+      )}
       <input type="range" min={0} max={Math.max(0, frames.length - 1)} value={frame} onChange={e => setFrame(Number(e.target.value))} disabled={frames.length < 2} style={{ width: '100%' }} />
       {error && <div style={{ color: '#f85149' }}>错误: {error}</div>}
       {loading && <div style={{ opacity: 0.7 }}>加载中…</div>}
