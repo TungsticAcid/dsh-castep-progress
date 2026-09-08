@@ -27,13 +27,24 @@ async function exec(alias: string, command: string, timeoutMs = 45000): Promise<
 
 interface Host { alias: string; user?: string }
 interface JobInfo { job: string; tag: string; server: string; status: string; ion: number | null; scf: number | null; energy: number | null; start: string; remote: string }
-const RE_TS = /_\d{8}_\d{4,6}$/
 
 async function readBases(alias: string, user: string): Promise<string[]> {
-  const marker = await exec(alias, `cat /home/${user}/.smartcatai/campaigns.json 2>/dev/null`)
-  if (!marker) return []
-  try { const d = JSON.parse(marker); if (Array.isArray(d?.[alias]) && d[alias].length) return d[alias] } catch {}
-  return []
+  const home = `/home/${user}`
+  const bases: string[] = []
+  const seen = new Set<string>()
+  const add = (p: string) => { const q = p.trim().replace(/\/+$/, ''); if (q && !seen.has(q)) { seen.add(q); bases.push(q) } }
+
+  const marker = await exec(alias, `cat ${home}/.smartcatai/campaigns.json 2>/dev/null`)
+  if (marker) {
+    try { const d = JSON.parse(marker); const listed = d?.[alias]; if (Array.isArray(listed)) listed.forEach(add) } catch {}
+  }
+
+  // 回退：未写 marker 的服务器（如 MS-195）自动发现 smartcatai_campaign 基目录。
+  if (bases.length === 0) {
+    const found = await exec(alias, `find ${home} -maxdepth 4 -type d -name smartcatai_campaign 2>/dev/null | head -20`)
+    if (found) found.split('\n').map(s => s.trim()).filter(Boolean).forEach(add)
+  }
+  return bases
 }
 
 async function fetchJobsForServer(alias: string, user: string, extraBases: string[]): Promise<JobInfo[]> {
@@ -44,27 +55,34 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
     const dirs = (listing || '').split('\n').map(s => s.trim()).filter(Boolean)
     for (const d of dirs) {
       const tag = d.split('/').pop() || ''
-      const job = tag.replace(RE_TS, '')
-      const info: JobInfo = { job, tag, server: alias, status: '?', ion: null, scf: null, energy: null, start: '', remote: d }
+      const info: JobInfo = { job: tag, tag, server: alias, status: '?', ion: null, scf: null, energy: null, start: '', remote: d }
 
-      // 一次性读取关键信号（减少往返）
+      // 一次性脚本：先取目录内真实 .castep 种子名（目录名常带时间戳/变体后缀），再读状态/能量。
       const script = [
         `cd ${d} || exit 1`,
+        `seed=$(ls *.castep 2>/dev/null | head -1)`,
+        `seed=\${seed%.castep}`,
+        `[ -n "$seed" ] || seed=$(basename "$PWD")`,
+        `job=$seed`,
         `has_castep=0; has_total=0; has_geom=0; has_scf=0; has_maxit=0; has_err=0`,
-        `[ -f ${job}.castep ] && has_castep=1`,
-        `grep -q 'Total time' ${job}.castep 2>/dev/null && has_total=1`,
-        `grep -qE 'geometry optimi[sz]ation completed|LBFGS:.*completed' ${job}.castep 2>/dev/null && has_geom=1`,
-        `grep -q 'electronic minimisation did not converge' ${job}.castep 2>/dev/null && has_scf=1`,
-        `grep -qiE 'reached.*maximum.*iter|maximum.*iter|iteration limit' ${job}.castep 2>/dev/null && has_maxit=1`,
-        `grep -qiE 'MPI_Abort|Fatal error|error in |error while' ${job}.castep 2>/dev/null && has_err=1`,
-        `mtime=$(stat -c %Y ${job}.castep 2>/dev/null || echo 0)`,
-        `proc=$(ps aux | grep -c "[c]astepexe.*${job}" 2>/dev/null || echo 0)`,
+        `[ -f $job.castep ] && has_castep=1`,
+        `grep -q 'Total time' $job.castep 2>/dev/null && has_total=1`,
+        `grep -qE 'geometry optimi[sz]ation completed|LBFGS:.*completed' $job.castep 2>/dev/null && has_geom=1`,
+        `grep -q 'electronic minimisation did not converge' $job.castep 2>/dev/null && has_scf=1`,
+        `grep -qiE 'reached.*maximum.*iter|maximum.*iter|iteration limit' $job.castep 2>/dev/null && has_maxit=1`,
+        `grep -qiE 'MPI_Abort|Fatal error|error in |error while' $job.castep 2>/dev/null && has_err=1`,
+        `mtime=$(stat -c %Y $job.castep 2>/dev/null || echo 0)`,
+        `proc=$(ps aux | grep -c "[c]astepexe.*$job" 2>/dev/null || echo 0)`,
+        `echo "JOB=$job"`,
         `echo "S=$has_castep,$has_total,$has_geom,$has_scf,$has_maxit,$has_err,$mtime,$proc"`,
-        `grep -E 'Final energy, E|Final Enthalpy' ${job}.castep 2>/dev/null | tail -1`,
-        `tail -n 40 ${job}.castep 2>/dev/null | grep -E '^[[:space:]]*[0-9]+[[:space:]].*SCF' | tail -1`,
+        `grep -E 'Final energy, E|Final Enthalpy' $job.castep 2>/dev/null | tail -1`,
+        `tail -n 40 $job.castep 2>/dev/null | grep -E '^[[:space:]]*[0-9]+[[:space:]].*SCF' | tail -1`,
       ].join(';\n')
       const out = await exec(alias, script)
       const lines = (out || '').split('\n')
+      const jobLine = lines.find(l => l.startsWith('JOB='))
+      if (jobLine) { const j = jobLine.slice(4).trim(); if (j) info.job = j }
+      const seed = info.job || tag
       const sig = lines.find(l => l.startsWith('S='))
       let s: Record<string, string> = {}
       if (sig) {
@@ -75,7 +93,7 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
       if (energyLine) { const m = energyLine.match(/=\s*([-\d.E+]+)/); if (m) info.energy = Number(m[1]) }
       const scfLine = lines.filter(l => /--< SCF/.test(l)).pop()
       if (scfLine) { const m = scfLine.trim().match(/^(\d+)\s+([-\d.E+]+)/); if (m) { info.scf = Number(m[1]); if (info.energy == null) info.energy = Number(m[2]) } }
-      const ion = await exec(alias, `cd ${d} 2>/dev/null && grep -c 'Initial[[:space:]]' ${job}.castep 2>/dev/null`)
+      const ion = await exec(alias, `cd ${d} 2>/dev/null && grep -c 'Initial[[:space:]]' ${seed}.castep 2>/dev/null`)
       if (/^\d+$/.test((ion || '').trim())) info.ion = Number(ion.trim())
 
       // 状态判定（参考 DRM spinel）
@@ -133,6 +151,8 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
   const [lastRefresh, setLastRefresh] = useState('')
   const [extraBases, setExtraBases] = useState<string[]>(() => { try { const v = JSON.parse(localStorage.getItem(EXTRA_KEY) || '[]'); return Array.isArray(v) ? v.filter(Boolean) : [] } catch { return [] } })
   const [newBase, setNewBase] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const tickRef = useRef<() => void>(() => {})
 
   useEffect(() => { localStorage.setItem(INTERVAL_KEY, String(intervalMin)) }, [intervalMin])
@@ -163,7 +183,8 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
   }, [selected, intervalMin, extraBases, hosts])
 
   const filtered = useMemo(() => {
-    let out = jobs.filter(j => !query || j.job.toLowerCase().includes(query.toLowerCase()))
+    const q = query.trim().toLowerCase()
+    let out = jobs.filter(j => !q || j.job.toLowerCase().includes(q) || j.tag.toLowerCase().includes(q))
     if (status !== 'all') out = out.filter(j => j.status === status)
     const dir = asc ? 1 : -1
     return [...out].sort((a, b) => {
@@ -172,6 +193,11 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
       return String(ka ?? '').localeCompare(String(kb ?? '')) * dir
     })
   }, [jobs, query, status, sortKey, asc])
+
+  const totalPage = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const curPage = Math.min(page, totalPage)
+  const pageRows = filtered.slice((curPage - 1) * pageSize, curPage * pageSize)
+  useEffect(() => { setPage(1) }, [query, status, sortKey, asc, pageSize])
 
   const clickSort = (k: SortKey) => { if (sortKey === k) setAsc(s => !s); else { setSortKey(k); setAsc(true) } }
   const th = (k: SortKey, label: string) => (<th onClick={() => clickSort(k)} style={{ cursor: 'pointer' }}>{label}{sortKey === k ? (asc ? ' ▲' : ' ▼') : ''}</th>)
@@ -226,11 +252,11 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
             </tr>
           </thead>
           <tbody>
-            {filtered.map(j => {
+            {pageRows.map(j => {
               const sm = STATUS_META[j.status] || { label: j.status, color: 'gray' }
               return (
                 <tr key={j.server + ':' + j.tag} style={{ borderTop: '1px solid #30363d' }}>
-                  <td style={{ cursor: 'pointer' }} title="点击查看结构" onClick={() => { if (onOpenStructure) onOpenStructure({ server: j.server, job: j.job, remoteDir: j.remote }); else window.dispatchEvent(new CustomEvent('castep-open-structure', { detail: { server: j.server, job: j.job, remoteDir: j.remote } })) }}>{j.job}</td>
+                  <td style={{ cursor: 'pointer' }} title="点击查看结构" onClick={() => { if (onOpenStructure) onOpenStructure({ server: j.server, job: j.job, remoteDir: j.remote }); else window.dispatchEvent(new CustomEvent('castep-open-structure', { detail: { server: j.server, job: j.job, remoteDir: j.remote } })) }}>{j.job}{j.tag !== j.job && <div style={{ opacity: 0.6, fontSize: 10 }}>{j.tag}</div>}</td>
                   <td>{j.server}</td>
                   <td style={{ color: sm.color }}>{sm.label}</td>
                   <td style={{ opacity: 0.8 }}>{j.start || '-'}</td>
@@ -247,6 +273,17 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
             {filtered.length === 0 && <tr><td colSpan={8} style={{ opacity: 0.7 }}>暂无作业</td></tr>}
           </tbody>
         </table>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>‹ 上一页</button>
+        <span>第 {curPage} / {totalPage} 页 · 共 {filtered.length} 个作业</span>
+        <button disabled={curPage >= totalPage} onClick={() => setPage(curPage + 1)}>下一页 ›</button>
+        <label>每页
+          <select value={pageSize} onChange={e => setPageSize(Number(e.target.value) || 50)} style={{ marginLeft: 4, padding: '2px 4px' }}>
+            {[20, 50, 100, 200].map(n => <option key={n} value={n}>{n}</option>)}
+            <option value={100000}>全部</option>
+          </select>
+        </label>
       </div>
     </div>
   )

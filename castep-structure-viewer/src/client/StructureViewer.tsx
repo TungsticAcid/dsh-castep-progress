@@ -135,6 +135,9 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
   const gridRef = useRef<THREE.GridHelper | null>(null)
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer>()
+  const targetRef = useRef<THREE.Vector3 | null>(null)
+  const sphRef = useRef<THREE.Spherical | null>(null)
+  const applyCamRef = useRef<() => void>(() => {})
 
   const presentElems = useMemo(() => Array.from(new Set(frames.flatMap(f => f.atoms.map(a => a.element)))).sort(), [frames])
   const atomColor = (el: string) => customElem[el] || elemColors[el] || '#9aa0a6'
@@ -144,6 +147,14 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
     try {
       let fs = parseGeomFrames(await exec(job.server, `cat ${job.remoteDir}/${job.job}.geom 2>/dev/null`))
       if (fs.length === 0) fs = parseCellFrames(await exec(job.server, `cat ${job.remoteDir}/${job.job}.cell 2>/dev/null`))
+      // 旋转中心 = 晶胞中心 (a+b+c)/2，避免结构偏离原点时旋转甩出视野。
+      const target = targetRef.current
+      if (fs.length && target && fs[0].cell && fs[0].cell.length >= 3) {
+        const [a, b, c] = fs[0].cell
+        const center = new THREE.Vector3(a[0], a[1], a[2]).add(new THREE.Vector3(b[0], b[1], b[2])).add(new THREE.Vector3(c[0], c[1], c[2])).multiplyScalar(0.5)
+        target.copy(center)
+        applyCamRef.current()
+      }
       setFrames(fs); setFrame(0)
     } catch (e: any) { setError(String(e?.message ?? e)) }
     setLoading(false)
@@ -165,6 +176,9 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
       camera.lookAt(target)
     }
     applyCam()
+    targetRef.current = target
+    sphRef.current = sph
+    applyCamRef.current = applyCam
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(width, height); el.appendChild(renderer.domElement)
     const group = new THREE.Group(); scene.add(group)
