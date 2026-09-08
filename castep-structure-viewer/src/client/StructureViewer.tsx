@@ -155,10 +155,11 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
     const el = mountRef.current
     const width = el.clientWidth, height = el.clientHeight
     const scene = new THREE.Scene(); scene.background = new THREE.Color(bgColor)
-    const frustum = 8
-    const camera = new THREE.OrthographicCamera(-frustum*width/height, frustum*width/height, frustum, -frustum, 0.01, 500)
+    const frustum = 20
+    // 正交相机：near 设为负值避免“贴近内容被 near 平面裁掉”，far 足够大。
+    const camera = new THREE.OrthographicCamera(-frustum*width/height, frustum*width/height, frustum, -frustum, -100, 1000)
     const target = new THREE.Vector3(0, 0, 0)
-    const sph = new THREE.Spherical().setFromVector3(new THREE.Vector3(16, 13, 16).sub(target))
+    const sph = new THREE.Spherical().setFromVector3(new THREE.Vector3(28, 22, 28).sub(target))
     const applyCam = () => {
       camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(sph))
       camera.lookAt(target)
