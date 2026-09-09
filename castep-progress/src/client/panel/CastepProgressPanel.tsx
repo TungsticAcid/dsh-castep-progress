@@ -8,6 +8,7 @@
  * 手动刷新、文件下载/删除。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 
 const API = '/api/dsh-ssh/exec'
 const DEFAULT_INTERVAL_MIN = 30
@@ -26,7 +27,7 @@ async function exec(alias: string, command: string, timeoutMs = 45000): Promise<
 }
 
 interface Host { alias: string; user?: string }
-interface JobInfo { job: string; tag: string; server: string; status: string; ion: number | null; scf: number | null; energy: number | null; start: string; remote: string }
+interface JobInfo { job: string; tag: string; server: string; status: string; ion: number | null; scf: number | null; energy: number | null; start: string; startMs: number | null; total: number | null; remote: string }
 
 async function readBases(alias: string, user: string): Promise<string[]> {
   const home = `/home/${user}`
@@ -55,7 +56,7 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
     const dirs = (listing || '').split('\n').map(s => s.trim()).filter(Boolean)
     for (const d of dirs) {
       const tag = d.split('/').pop() || ''
-      const info: JobInfo = { job: tag, tag, server: alias, status: '?', ion: null, scf: null, energy: null, start: '', remote: d }
+      const info: JobInfo = { job: tag, tag, server: alias, status: '?', ion: null, scf: null, energy: null, start: '', startMs: null, total: null, remote: d }
 
       // 一次性脚本：先取目录内真实 .castep 种子名（目录名常带时间戳/变体后缀），再读状态/能量。
       const script = [
@@ -72,11 +73,14 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
         `grep -qiE 'reached.*maximum.*iter|maximum.*iter|iteration limit' $job.castep 2>/dev/null && has_maxit=1`,
         `grep -qiE 'MPI_Abort|Fatal error|error in |error while' $job.castep 2>/dev/null && has_err=1`,
         `mtime=$(stat -c %Y $job.castep 2>/dev/null || echo 0)`,
+        `start=$(stat -c %Y $job.param $job.cell $job.castep 2>/dev/null | sort -n | head -1)`,
         `proc=$(ps aux | grep -c "[c]astepexe.*$job" 2>/dev/null || echo 0)`,
         `echo "JOB=$job"`,
+        `echo "START=$start"`,
         `echo "S=$has_castep,$has_total,$has_geom,$has_scf,$has_maxit,$has_err,$mtime,$proc"`,
         `grep -E 'Final energy, E|Final Enthalpy' $job.castep 2>/dev/null | tail -1`,
         `tail -n 40 $job.castep 2>/dev/null | grep -E '^[[:space:]]*[0-9]+[[:space:]].*SCF' | tail -1`,
+        `grep -E 'Total time' $job.castep 2>/dev/null | tail -1`,
       ].join(';\n')
       const out = await exec(alias, script)
       const lines = (out || '').split('\n')
@@ -93,6 +97,12 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
       if (energyLine) { const m = energyLine.match(/=\s*([-\d.E+]+)/); if (m) info.energy = Number(m[1]) }
       const scfLine = lines.filter(l => /--< SCF/.test(l)).pop()
       if (scfLine) { const m = scfLine.trim().match(/^(\d+)\s+([-\d.E+]+)/); if (m) { info.scf = Number(m[1]); if (info.energy == null) info.energy = Number(m[2]) } }
+      // 总时间（Total time = 12.34 h / 567.8 s）
+      const totalLine = lines.filter(l => /Total time/.test(l)).pop()
+      if (totalLine) {
+        const m = totalLine.match(/=\s*([\d.]+)\s*([a-z]+)/i)
+        if (m) { const v = Number(m[1]); const u = m[2].toLowerCase(); info.total = u.startsWith('h') ? v * 3600 : u.startsWith('m') ? v * 60 : v }
+      }
       const ion = await exec(alias, `cd ${d} 2>/dev/null && grep -c 'Initial[[:space:]]' ${seed}.castep 2>/dev/null`)
       if (/^\d+$/.test((ion || '').trim())) info.ion = Number(ion.trim())
 
@@ -109,7 +119,10 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
       else if (mtime > 0 && now - mtime > 3600) info.status = 'stopped'
       else info.status = 'running'
 
-      if (mtime > 0) info.start = new Date(mtime * 1000).toLocaleString()
+      if (mtime > 0) { info.startMs = mtime * 1000; info.start = new Date(mtime * 1000).toLocaleString() }
+      const startLine = lines.find(l => l.startsWith('START='))
+      const startSec = Number((startLine || '').slice(6).trim())
+      if (Number.isFinite(startSec) && startSec > 0) { info.startMs = startSec * 1000; info.start = new Date(startSec * 1000).toLocaleString() }
       jobs.push(info)
     }
   }
@@ -126,7 +139,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   stopped: { label: 'stopped', color: '#8b949e' },
   setup_only: { label: 'setup_only', color: '#8b949e' },
 }
-type SortKey = 'job' | 'server' | 'status' | 'ion' | 'scf' | 'energy' | 'start'
+type SortKey = 'job' | 'server' | 'path' | 'status' | 'ion' | 'scf' | 'energy' | 'start' | 'total'
 
 async function downloadFile(alias: string, path: string, name: string) {
   const res = await fetch(`/api/dsh-ssh/download?alias=${encodeURIComponent(alias)}&path=${encodeURIComponent(path)}`)
@@ -136,6 +149,36 @@ async function downloadFile(alias: string, path: string, name: string) {
   const a = document.createElement('a'); a.href = url; a.download = name; a.click()
   setTimeout(() => URL.revokeObjectURL(url), 3000)
 }
+
+/** 秒 → 人类可读时长。 */
+function fmtDuration(sec: number): string {
+  if (sec >= 3600) return `${(sec / 3600).toFixed(2)} h`
+  if (sec >= 60) return `${(sec / 60).toFixed(1)} min`
+  return `${sec.toFixed(0)} s`
+}
+
+/** 排序取值：路径列取 remote，开始时间列取 epoch。 */
+function sortVal(j: JobInfo, k: SortKey): number | string {
+  if (k === 'path') return j.remote
+  if (k === 'start') return j.startMs ?? 0
+  if (k === 'total') return j.total ?? -1
+  const v = (j as any)[k]
+  return v == null ? '' : v
+}
+
+/** 列定义（可拖拽调宽）。 */
+const COLS: { key: SortKey | 'ops'; label: string; w: number }[] = [
+  { key: 'job', label: '作业', w: 190 },
+  { key: 'server', label: '服务器', w: 80 },
+  { key: 'path', label: '路径', w: 260 },
+  { key: 'status', label: '状态', w: 100 },
+  { key: 'start', label: '开始时间', w: 150 },
+  { key: 'ion', label: '离子步', w: 72 },
+  { key: 'scf', label: 'SCF 步', w: 72 },
+  { key: 'energy', label: '能量(eV)', w: 110 },
+  { key: 'total', label: '总时间', w: 90 },
+  { key: 'ops', label: '操作', w: 130 },
+]
 
 export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructure?: (job: { server: string; job: string; remoteDir: string }) => void }) {
   const { onClose, onOpenStructure } = props
@@ -153,6 +196,9 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
   const [newBase, setNewBase] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [widths, setWidths] = useState<Record<string, number>>(() => { const o: Record<string, number> = {}; COLS.forEach(c => o[c.key] = c.w); return o })
   const tickRef = useRef<() => void>(() => {})
 
   useEffect(() => { localStorage.setItem(INTERVAL_KEY, String(intervalMin)) }, [intervalMin])
@@ -184,26 +230,51 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    let out = jobs.filter(j => !q || j.job.toLowerCase().includes(q) || j.tag.toLowerCase().includes(q))
+    let out = jobs.filter(j => !q || j.job.toLowerCase().includes(q) || j.tag.toLowerCase().includes(q) || j.remote.toLowerCase().includes(q))
     if (status !== 'all') out = out.filter(j => j.status === status)
+    if (fromDate) { const t = new Date(fromDate + 'T00:00:00').getTime(); out = out.filter(j => j.startMs != null && j.startMs >= t) }
+    if (toDate) { const t = new Date(toDate + 'T23:59:59').getTime(); out = out.filter(j => j.startMs != null && j.startMs <= t) }
     const dir = asc ? 1 : -1
     return [...out].sort((a, b) => {
-      const ka = a[sortKey]; const kb = b[sortKey]
+      const ka = sortVal(a, sortKey); const kb = sortVal(b, sortKey)
       if (typeof ka === 'number' && typeof kb === 'number') return (ka - kb) * dir
-      return String(ka ?? '').localeCompare(String(kb ?? '')) * dir
+      return String(ka).localeCompare(String(kb)) * dir
     })
-  }, [jobs, query, status, sortKey, asc])
+  }, [jobs, query, status, fromDate, toDate, sortKey, asc])
 
   const totalPage = Math.max(1, Math.ceil(filtered.length / pageSize))
   const curPage = Math.min(page, totalPage)
   const pageRows = filtered.slice((curPage - 1) * pageSize, curPage * pageSize)
-  useEffect(() => { setPage(1) }, [query, status, sortKey, asc, pageSize])
+  useEffect(() => { setPage(1) }, [query, status, fromDate, toDate, sortKey, asc, pageSize])
 
   const clickSort = (k: SortKey) => { if (sortKey === k) setAsc(s => !s); else { setSortKey(k); setAsc(true) } }
-  const th = (k: SortKey, label: string) => (<th onClick={() => clickSort(k)} style={{ cursor: 'pointer' }}>{label}{sortKey === k ? (asc ? ' ▲' : ' ▼') : ''}</th>)
+
+  // 拖拽列边框调宽：同时支持表格超出容器时左右滑动。
+  const startResize = (key: string, e: ReactMouseEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    const startX = e.clientX; const startW = widths[key] ?? 100
+    const onMove = (ev: MouseEvent) => { setWidths(w => ({ ...w, [key]: Math.max(48, startW + (ev.clientX - startX)) })) }
+    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); document.body.style.userSelect = '' }
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp)
+  }
+
+  const th = (c: { key: SortKey | 'ops'; label: string }) => {
+    const sortable = c.key !== 'ops'
+    const k = c.key as SortKey
+    return (
+      <th key={c.key} onClick={sortable ? () => clickSort(k) : undefined}
+        style={{ cursor: sortable ? 'pointer' : 'default', position: 'relative', width: widths[c.key], padding: '4px 8px 4px 4px', textAlign: 'left', userSelect: 'none' }}>
+        {c.label}{sortable && sortKey === k ? (asc ? ' ▲' : ' ▼') : ''}
+        <span onMouseDown={e => startResize(c.key, e)} title="拖动调整列宽"
+          style={{ position: 'absolute', top: 0, right: 0, width: 6, height: '100%', cursor: 'col-resize', background: 'rgba(128,128,128,0.25)' }} />
+      </th>
+    )
+  }
 
   const toggleServer = (alias: string) => setSelected(s => s.includes(alias) ? s.filter(x => x !== alias) : [...s, alias])
   const allSelected = hosts.length > 0 && selected.length === hosts.length
+  const totalWidth = COLS.reduce((s, c) => s + (widths[c.key] ?? c.w), 0)
 
   return (
     <div style={{ fontFamily: 'Consolas, monospace', padding: 8 }}>
@@ -218,11 +289,13 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
         ))}
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input placeholder="筛选作业名…" value={query} onChange={e => setQuery(e.target.value)} style={{ flex: 1, minWidth: 120, padding: '4px 6px' }} />
+        <input placeholder="筛选作业名 / 路径…" value={query} onChange={e => setQuery(e.target.value)} style={{ flex: 1, minWidth: 120, padding: '4px 6px' }} />
         <select value={status} onChange={e => setStatus(e.target.value)}>
           <option value="all">全部状态</option>
           {Object.keys(STATUS_META).map(k => <option key={k} value={k}>{STATUS_META[k].label}</option>)}
         </select>
+        <label>开始时间 <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} style={{ padding: '3px 4px' }} /> 至 <input type="date" value={toDate} onChange={e => setToDate(e.target.value)} style={{ padding: '3px 4px' }} /></label>
+        {(fromDate || toDate) && <button onClick={() => { setFromDate(''); setToDate('') }}>清除时间</button>}
         <label>刷新(min) <input type="number" min="1" value={intervalMin} onChange={e => setIntervalMin(Math.max(1, Number(e.target.value) || DEFAULT_INTERVAL_MIN))} style={{ width: 60, padding: '4px 6px' }} /></label>
         <button onClick={() => tickRef.current()}>手动刷新</button>
         <span style={{ opacity: 0.7 }}>{lastRefresh ? `上次 ${lastRefresh}` : ''}</span>
@@ -238,31 +311,27 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
       )}
       {error && <div style={{ color: '#f85149' }}>错误: {error}</div>}
       <div style={{ maxHeight: 520, overflow: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+        <table style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: totalWidth, fontSize: 12 }}>
+          <colgroup>
+            {COLS.map(c => <col key={c.key} style={{ width: widths[c.key] }} />)}
+          </colgroup>
           <thead>
-            <tr>
-              {th('job', '作业')}
-              {th('server', '服务器')}
-              {th('status', '状态')}
-              {th('start', '开始时间')}
-              {th('ion', '离子步')}
-              {th('scf', 'SCF 步')}
-              {th('energy', '能量(eV)')}
-              <th>操作</th>
-            </tr>
+            <tr>{COLS.map(c => th(c))}</tr>
           </thead>
           <tbody>
             {pageRows.map(j => {
               const sm = STATUS_META[j.status] || { label: j.status, color: 'gray' }
               return (
                 <tr key={j.server + ':' + j.tag} style={{ borderTop: '1px solid #30363d' }}>
-                  <td style={{ cursor: 'pointer' }} title="点击查看结构" onClick={() => { if (onOpenStructure) onOpenStructure({ server: j.server, job: j.job, remoteDir: j.remote }); else window.dispatchEvent(new CustomEvent('castep-open-structure', { detail: { server: j.server, job: j.job, remoteDir: j.remote } })) }}>{j.job}{j.tag !== j.job && <div style={{ opacity: 0.6, fontSize: 10 }}>{j.tag}</div>}</td>
+                  <td style={{ cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis' }} title={`${j.remote}（点击查看结构）`} onClick={() => { if (onOpenStructure) onOpenStructure({ server: j.server, job: j.job, remoteDir: j.remote }); else window.dispatchEvent(new CustomEvent('castep-open-structure', { detail: { server: j.server, job: j.job, remoteDir: j.remote } })) }}>{j.job}{j.tag !== j.job && <div style={{ opacity: 0.6, fontSize: 10 }}>{j.tag}</div>}</td>
                   <td>{j.server}</td>
+                  <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={j.remote}>{j.remote}</td>
                   <td style={{ color: sm.color }}>{sm.label}</td>
-                  <td style={{ opacity: 0.8 }}>{j.start || '-'}</td>
+                  <td style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>{j.start || '-'}</td>
                   <td>{j.ion ?? '-'}</td>
                   <td>{j.scf ?? '-'}</td>
                   <td>{j.energy != null ? j.energy.toFixed(4) : '-'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{j.status === 'converged' && j.total != null ? fmtDuration(j.total) : '-'}</td>
                   <td>
                     <button title="下载 .castep / .geom / .cell" onClick={() => { ['castep','geom','cell'].forEach(async ext => { try { await downloadFile(j.server, `${j.remote}/${j.job}.${ext}`, `${j.job}.${ext}`) } catch {} }) }}>下载</button>
                     <button title="删除远端目录（需确认）" onClick={() => { if (window.confirm(`确认删除远端目录 ${j.remote} ？此操作不可撤销。`)) { exec(j.server, `rm -rf ${j.remote}`).then(() => { setJobs(js => js.filter(x => x !== j)); alert('已删除'); }).catch(e => alert('删除失败: ' + e)) } }} style={{ color: '#f85149' }}>删除</button>
@@ -270,7 +339,7 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
                 </tr>
               )
             })}
-            {filtered.length === 0 && <tr><td colSpan={8} style={{ opacity: 0.7 }}>暂无作业</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={COLS.length} style={{ opacity: 0.7 }}>暂无作业</td></tr>}
           </tbody>
         </table>
       </div>

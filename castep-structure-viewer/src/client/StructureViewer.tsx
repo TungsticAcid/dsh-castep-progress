@@ -136,7 +136,7 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer>()
   const targetRef = useRef<THREE.Vector3 | null>(null)
-  const sphRef = useRef<THREE.Spherical | null>(null)
+  const rotQRef = useRef<THREE.Quaternion | null>(null)
   const applyCamRef = useRef<() => void>(() => {})
 
   const presentElems = useMemo(() => Array.from(new Set(frames.flatMap(f => f.atoms.map(a => a.element)))).sort(), [frames])
@@ -169,15 +169,19 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
     const frustum = 20
     // 正交相机：near 设为负值避免“贴近内容被 near 平面裁掉”，far 足够大。
     const camera = new THREE.OrthographicCamera(-frustum*width/height, frustum*width/height, frustum, -frustum, -100, 1000)
+    // 旋转用四元数累积（绕世界 Y 做水平、绕相机右轴做垂直），无欧拉角万向锁。
     const target = new THREE.Vector3(0, 0, 0)
-    const sph = new THREE.Spherical().setFromVector3(new THREE.Vector3(28, 22, 28).sub(target))
+    const rotQ = new THREE.Quaternion()
+    const baseOffset = new THREE.Vector3(28, 22, 28)
+    const worldUp = new THREE.Vector3(0, 1, 0)
     const applyCam = () => {
-      camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(sph))
+      camera.position.copy(target).add(baseOffset.clone().applyQuaternion(rotQ))
+      camera.up.copy(worldUp).applyQuaternion(rotQ)
       camera.lookAt(target)
     }
     applyCam()
     targetRef.current = target
-    sphRef.current = sph
+    rotQRef.current = rotQ
     applyCamRef.current = applyCam
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(width, height); el.appendChild(renderer.domElement)
@@ -196,6 +200,7 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
     }
     const onMove = (e: MouseEvent) => {
       if (!dragging) return
+      camera.updateMatrix()
       const dx = e.clientX - lastX, dy = e.clientY - lastY; lastX = e.clientX; lastY = e.clientY
       if (mode === 'pan') {
         const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0)
@@ -203,8 +208,12 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
         const k = (frustum * 2) / camera.zoom * 0.002
         target.add(right.multiplyScalar(-dx * k)).add(up.multiplyScalar(dy * k))
       } else {
-        sph.theta -= dx * 0.01
-        sph.phi = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi - dy * 0.01))
+        // “抓住物体拖动”方向：向右拖 → 物体向右转（相机左移）；向下拖 → 物体向下转（相机上移）。
+        const k = 0.01
+        const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0).normalize()
+        const qYaw = new THREE.Quaternion().setFromAxisAngle(worldUp, -dx * k)
+        const qPitch = new THREE.Quaternion().setFromAxisAngle(right, -dy * k)
+        rotQ.premultiply(qPitch).premultiply(qYaw)
       }
       applyCam()
     }
