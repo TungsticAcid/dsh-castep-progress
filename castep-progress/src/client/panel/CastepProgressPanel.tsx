@@ -7,7 +7,7 @@
  * 读取任务信息。支持：多服务器选择、开始时间、能量、细化状态、筛选/排序、
  * 手动刷新、文件下载/删除。
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 
 const API = '/api/dsh-ssh/exec'
@@ -199,6 +199,8 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [widths, setWidths] = useState<Record<string, number>>(() => { const o: Record<string, number> = {}; COLS.forEach(c => o[c.key] = c.w); return o })
+  const [hBarH, setHBarH] = useState(0)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const tickRef = useRef<() => void>(() => {})
 
   useEffect(() => { localStorage.setItem(INTERVAL_KEY, String(intervalMin)) }, [intervalMin])
@@ -247,6 +249,21 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
   const pageRows = filtered.slice((curPage - 1) * pageSize, curPage * pageSize)
   useEffect(() => { setPage(1) }, [query, status, fromDate, toDate, sortKey, asc, pageSize])
 
+  // 横向滚动条会占掉纵向高度：检测到横向溢出时把表格区最大高度补上滚动条厚度，保持行区域高度不变。
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const measure = () => {
+      const h = el.scrollWidth > el.clientWidth + 1 ? Math.max(0, el.offsetHeight - el.clientHeight) : 0
+      setHBarH(prev => (prev === h ? prev : h))
+    }
+    measure()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    ro?.observe(el)
+    window.addEventListener('resize', measure)
+    return () => { ro?.disconnect(); window.removeEventListener('resize', measure) }
+  }, [widths, pageSize, filtered.length])
+
   const clickSort = (k: SortKey) => { if (sortKey === k) setAsc(s => !s); else { setSortKey(k); setAsc(true) } }
 
   // 拖拽列边框调宽：同时支持表格超出容器时左右滑动。
@@ -277,18 +294,18 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
   const totalWidth = COLS.reduce((s, c) => s + (widths[c.key] ?? c.w), 0)
 
   return (
-    <div style={{ fontFamily: 'Consolas, monospace', padding: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+    <div style={{ fontFamily: 'Consolas, monospace', padding: 8, flex: '1 1 auto', minWidth: 0, minHeight: 0, width: '100%', height: '100%', boxSizing: 'border-box', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexShrink: 0 }}>
         <h2 style={{ margin: 0 }}>CASTEP 实时进度</h2>
         {onClose && <button onClick={onClose} style={{ marginLeft: 'auto' }}>‹ 返回对话</button>}
       </div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
         <label><input type="checkbox" checked={allSelected} onChange={e => setSelected(e.target.checked ? hosts.map(h => h.alias) : [])} /> 全选服务器</label>
         {hosts.map(h => (
           <label key={h.alias}><input type="checkbox" checked={selected.includes(h.alias)} onChange={() => toggleServer(h.alias)} /> {h.alias}</label>
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
         <input placeholder="筛选作业名 / 路径…" value={query} onChange={e => setQuery(e.target.value)} style={{ flex: 1, minWidth: 120, padding: '4px 6px' }} />
         <select value={status} onChange={e => setStatus(e.target.value)}>
           <option value="all">全部状态</option>
@@ -300,17 +317,17 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
         <button onClick={() => tickRef.current()}>手动刷新</button>
         <span style={{ opacity: 0.7 }}>{lastRefresh ? `上次 ${lastRefresh}` : ''}</span>
       </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
         <input placeholder="手动添加任务路径（远程绝对路径）" value={newBase} onChange={e => setNewBase(e.target.value)} style={{ flex: 1, minWidth: 160, padding: '4px 6px' }} />
         <button onClick={() => { const b = newBase.trim(); if (b && !extraBases.includes(b)) setExtraBases([...extraBases, b]); setNewBase('') }}>添加路径</button>
       </div>
       {extraBases.length > 0 && (
-        <div style={{ marginBottom: 8 }}>
+        <div style={{ marginBottom: 8, flexShrink: 0 }}>
           {extraBases.map(b => (<span key={b} style={{ display: 'inline-block', margin: '2px 4px', padding: '2px 6px', border: '1px solid #30363d', borderRadius: 4 }}>{b} <button onClick={() => setExtraBases(extraBases.filter(x => x !== b))} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#f85149' }}>×</button></span>))}
         </div>
       )}
-      {error && <div style={{ color: '#f85149' }}>错误: {error}</div>}
-      <div style={{ maxHeight: 520, overflow: 'auto' }}>
+      {error && <div style={{ color: '#f85149', flexShrink: 0 }}>错误: {error}</div>}
+      <div ref={scrollRef} style={{ flex: '1 1 auto', minHeight: 80, maxHeight: 520 + hBarH, overflow: 'auto', width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
         <table style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: totalWidth, fontSize: 12 }}>
           <colgroup>
             {COLS.map(c => <col key={c.key} style={{ width: widths[c.key] }} />)}
@@ -343,7 +360,7 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
           </tbody>
         </table>
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
         <button disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>‹ 上一页</button>
         <span>第 {curPage} / {totalPage} 页 · 共 {filtered.length} 个作业</span>
         <button disabled={curPage >= totalPage} onClick={() => setPage(curPage + 1)}>下一页 ›</button>
