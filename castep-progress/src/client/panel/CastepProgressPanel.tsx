@@ -65,19 +65,23 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
         `seed=\${seed%.castep}`,
         `[ -n "$seed" ] || seed=$(basename "$PWD")`,
         `job=$seed`,
-        `has_castep=0; has_total=0; has_geom=0; has_scf=0; has_maxit=0; has_err=0`,
+        `has_castep=0; is_dry=0; has_ts_found=0; has_geom_done=0; has_scf=0; has_maxit=0; has_err=0; has_total=0`,
         `[ -f $job.castep ] && has_castep=1`,
-        `grep -q 'Total time' $job.castep 2>/dev/null && has_total=1`,
-        `grep -qE 'geometry optimi[sz]ation completed|LBFGS:.*completed' $job.castep 2>/dev/null && has_geom=1`,
+        `has_run=0; ls run_*.sh >/dev/null 2>&1 && has_run=1`,
+        `has_drylog=0; { ls dryrun_*.sh >/dev/null 2>&1 || [ -f $job.dryrun.log ]; } && has_drylog=1`,
+        `[ $has_run -eq 0 ] && [ $has_drylog -eq 1 ] && is_dry=1`,
+        `grep -qE 'LST Maximum Found|Transition state search completed|TS search converged|Saddle point found' $job.castep 2>/dev/null && has_ts_found=1`,
+        `grep -qE 'Geometry optimization completed successfully|LBFGS: Geometry optimization completed|Optimization completed successfully' $job.castep 2>/dev/null && has_geom_done=1`,
         `grep -q 'electronic minimisation did not converge' $job.castep 2>/dev/null && has_scf=1`,
-        `grep -qiE 'reached.*maximum.*iter|maximum.*iter|iteration limit' $job.castep 2>/dev/null && has_maxit=1`,
+        `grep -qiE 'reached.*maximum|maximum number of (steps|iterations)|iteration limit|failed to converge in' $job.castep 2>/dev/null && has_maxit=1`,
         `grep -qiE 'MPI_Abort|Fatal error|error in |error while' $job.castep 2>/dev/null && has_err=1`,
+        `grep -q 'Total time' $job.castep 2>/dev/null && has_total=1`,
         `mtime=$(stat -c %Y $job.castep 2>/dev/null || echo 0)`,
         `start=$(stat -c %Y $job.param $job.cell $job.castep 2>/dev/null | sort -n | head -1)`,
         `proc=$(ps aux | grep -c "[c]astepexe.*$job" 2>/dev/null || echo 0)`,
         `echo "JOB=$job"`,
         `echo "START=$start"`,
-        `echo "S=$has_castep,$has_total,$has_geom,$has_scf,$has_maxit,$has_err,$mtime,$proc"`,
+        `echo "S=$has_castep,$is_dry,$has_ts_found,$has_geom_done,$has_scf,$has_maxit,$has_err,$has_total,$mtime,$proc"`,
         `grep -E 'Final energy, E|Final Enthalpy' $job.castep 2>/dev/null | tail -1`,
         `tail -n 40 $job.castep 2>/dev/null | grep -E '^[[:space:]]*[0-9]+[[:space:]].*SCF' | tail -1`,
         `grep -E 'Total time' $job.castep 2>/dev/null | tail -1`,
@@ -91,7 +95,7 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
       let s: Record<string, string> = {}
       if (sig) {
         const v = sig.slice(2).split(',')
-        ;['has_castep','has_total','has_geom','has_scf','has_maxit','has_err','mtime','proc'].forEach((k, i) => s[k] = v[i])
+        ;['has_castep','is_dry','has_ts_found','has_geom_done','has_scf','has_maxit','has_err','has_total','mtime','proc'].forEach((k, i) => s[k] = v[i])
       }
       const energyLine = lines.find(l => /Final energy, E|Final Enthalpy/.test(l))
       if (energyLine) { const m = energyLine.match(/=\s*([-\d.E+]+)/); if (m) info.energy = Number(m[1]) }
@@ -106,16 +110,19 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
       const ion = await exec(alias, `cd ${d} 2>/dev/null && grep -c 'Initial[[:space:]]' ${seed}.castep 2>/dev/null`)
       if (/^\d+$/.test((ion || '').trim())) info.ion = Number(ion.trim())
 
-      // 状态判定（参考 DRM spinel）
+      // 状态判定：只用真收敛/完成标记，不用 Total time（dry run 也有 Total time）。
       const now = Math.floor(Date.now() / 1000)
       const mtime = Number(s.mtime || 0)
       const proc = Number(s.proc || 0)
       if (s.has_castep === '0') info.status = 'setup_only'
-      else if (s.has_total === '1' || s.has_geom === '1') info.status = 'converged'
-      else if (s.has_scf === '1') info.status = 'scf_unconverged'
+      else if (s.is_dry === '1') info.status = 'dry_run'
+      else if (s.has_ts_found === '1') info.status = 'ts_found'
+      else if (s.has_geom_done === '1') info.status = 'converged'
       else if (s.has_maxit === '1') info.status = 'geom_max_iter'
+      else if (s.has_scf === '1') info.status = 'scf_unconverged'
       else if (s.has_err === '1') info.status = 'error'
       else if (proc > 0) info.status = 'running'
+      else if (s.has_total === '1') info.status = 'finished'
       else if (mtime > 0 && now - mtime > 3600) info.status = 'stopped'
       else info.status = 'running'
 
@@ -130,8 +137,11 @@ async function fetchJobsForServer(alias: string, user: string, extraBases: strin
 }
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
-  converged: { label: 'converged', color: 'green' },
+  converged: { label: 'converged(几何收敛)', color: 'green' },
+  ts_found: { label: 'TS已找到(LST极大)', color: 'green' },
+  finished: { label: 'finished(正常结束)', color: '#3fb950' },
   running: { label: 'running', color: '#b8860b' },
+  dry_run: { label: 'dry_run(仅试算)', color: '#8b949e' },
   scf_unconverged: { label: 'SCF未收敛', color: '#f85149' },
   geom_max_iter: { label: '达到最大迭代', color: '#f85149' },
   error: { label: 'error', color: '#f85149' },
@@ -348,9 +358,9 @@ export function CastepProgressPanel(props: { onClose?: () => void; onOpenStructu
                   <td>{j.ion ?? '-'}</td>
                   <td>{j.scf ?? '-'}</td>
                   <td>{j.energy != null ? j.energy.toFixed(4) : '-'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{j.status === 'converged' && j.total != null ? fmtDuration(j.total) : '-'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{j.total != null ? fmtDuration(j.total) : '-'}</td>
                   <td>
-                    <button title="下载 .castep / .geom / .cell" onClick={() => { ['castep','geom','cell'].forEach(async ext => { try { await downloadFile(j.server, `${j.remote}/${j.job}.${ext}`, `${j.job}.${ext}`) } catch {} }) }}>下载</button>
+                    <button title="下载 .castep / .geom / .ts / .cell" onClick={() => { ['castep','geom','ts','cell'].forEach(async ext => { try { await downloadFile(j.server, `${j.remote}/${j.job}.${ext}`, `${j.job}.${ext}`) } catch {} }) }}>下载</button>
                     <button title="删除远端目录（需确认）" onClick={() => { if (window.confirm(`确认删除远端目录 ${j.remote} ？此操作不可撤销。`)) { exec(j.server, `rm -rf ${j.remote}`).then(() => { setJobs(js => js.filter(x => x !== j)); alert('已删除'); }).catch(e => alert('删除失败: ' + e)) } }} style={{ color: '#f85149' }}>删除</button>
                   </td>
                 </tr>

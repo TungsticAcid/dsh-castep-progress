@@ -1,10 +1,13 @@
 /**
  * StructureViewer.tsx — CASTEP 结构查看器（three.js）
  *
- * 复用 dsh-ssh 插件的 `/api/dsh-ssh/exec` 读取远程 `.geom`（固定格式轨迹：
- * 每帧以 `<-- c` 行开始，含 `h`(晶格) / `R`(原子坐标) / `F`(力)），解析
- * 逐帧结构并渲染原子球 + 晶胞框。提供帧滑块 + 播放/暂停；正交投影；
- * 左键旋转、中/右键或 Shift+左键平移、滚轮缩放；背景色与逐元素配色可调。
+ * 复用 dsh-ssh 插件的 `/api/dsh-ssh/exec` 读取远程轨迹文件并解析逐帧结构：
+ *   - `<seed>.geom`：几何优化轨迹（每帧以 `<-- c` 行开始）
+ *   - `<seed>.ts`  ：TS 搜索轨迹（每帧以 `LST <n> <反应坐标>` 行开始）
+ *   - `<seed>.cell`：兜底单帧（%BLOCK 格式）
+ * 三者都含 `h`(晶格) / `R`(原子坐标) 标记。渲染原子球 + 晶胞框，帧滑块 + 播放/暂停；
+ * 正交投影；旋转绕晶胞中心、用四元数；左键旋转、中/右键或 Shift+左键平移、滚轮缩放；
+ * 背景色与逐元素配色可调。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
@@ -35,35 +38,44 @@ const ELEM: Record<string, string> = {
 
 const DEFAULT_BG = '#0d1117'
 
-/** 解析 CASTEP 固定格式 .geom 轨迹（逐帧）。 */
-function parseGeomFrames(text: string): Frame[] {
+/**
+ * 通用固定格式轨迹解析（.geom / .ts 同族格式）。
+ * 帧起始：isDelim 命中（.geom 为 `<-- c`，.ts 为 `LST ...`）；
+ * 另外，若同一帧内再次出现 3 行晶格（第 4 个 `<-- h`），也视为新帧——
+ * CASTEP 在 .ts 末尾会把最终结构直接追加，不带新的 LST 行。
+ */
+function parseFixedFrames(text: string, isDelim: (ln: string) => boolean): Frame[] {
   const frames: Frame[] = []
   let cur: Frame | null = null
   let cellRows: number[][] = []
+  const start = () => { cur = { cell: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], atoms: [] }; cellRows = [] }
+  const flush = () => { if (cur && cur.atoms.length) frames.push(cur); start() }
   for (const raw of text.split('\n')) {
     const ln = raw.trim()
-    if (ln.endsWith('<-- c')) {
-      if (cur) frames.push(cur)
-      cur = { cell: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], atoms: [] }
-      cellRows = []
-      continue
-    }
+    if (isDelim(ln)) { flush(); continue }
     if (!cur) continue
     if (ln.endsWith('<-- h')) {
+      if (cellRows.length >= 3) flush()
       const nums = ln.replace('<-- h', '').trim().split(/\s+/).map(Number).filter(n => Number.isFinite(n))
-      if (nums.length >= 3 && cellRows.length < 3) cellRows.push(nums.slice(0, 3))
-      if (cellRows.length === 3) cur.cell = cellRows
+      if (nums.length >= 3) cellRows.push(nums.slice(0, 3))
+      if (cellRows.length === 3 && cur) cur.cell = cellRows
     } else if (ln.endsWith('<-- R')) {
       const parts = ln.replace('<-- R', '').trim().split(/\s+/)
       if (parts.length >= 5) {
         const xyz = parts.slice(2, 5).map(Number)
-        if (xyz.every(n => Number.isFinite(n))) cur.atoms.push({ element: parts[0], xyz })
+        if (xyz.every(n => Number.isFinite(n)) && cur) cur.atoms.push({ element: parts[0], xyz })
       }
     }
   }
-  if (cur) frames.push(cur)
+  if (cur && cur.atoms.length) frames.push(cur)
   return frames.filter(f => f.atoms.length > 0)
 }
+
+/** 解析 CASTEP .geom 轨迹（每帧以 `<-- c` 行开始）。 */
+function parseGeomFrames(text: string): Frame[] { return parseFixedFrames(text, ln => ln.endsWith('<-- c')) }
+
+/** 解析 CASTEP .ts（TS 搜索轨迹，每帧以 `LST <n> <反应坐标>` 行开始）。 */
+function parseTsFrames(text: string): Frame[] { return parseFixedFrames(text, ln => /^LST\b/.test(ln)) }
 
 /** 解析 .cell（%BLOCK 格式）成单帧。 */
 function parseCellFrames(text: string): Frame[] {
@@ -126,6 +138,7 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
   const [error, setError] = useState('')
   const [play, setPlay] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [source, setSource] = useState('')
   const [bgColor, setBgColor] = useState(DEFAULT_BG)
   const [showGrid, setShowGrid] = useState(false)
   const [elemColors, setElemColors] = useState<Record<string, string>>({ ...ELEM })
@@ -145,8 +158,21 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
   const load = async () => {
     setLoading(true); setError('')
     try {
-      let fs = parseGeomFrames(await exec(job.server, `cat ${job.remoteDir}/${job.job}.geom 2>/dev/null`))
-      if (fs.length === 0) fs = parseCellFrames(await exec(job.server, `cat ${job.remoteDir}/${job.job}.cell 2>/dev/null`))
+      // 一次取回三种可能的轨迹文件（.geom 几何优化轨迹 / .ts TS 搜索轨迹 / .cell 单帧）。
+      const out = await exec(job.server, `cd ${job.remoteDir} 2>/dev/null; for e in geom ts cell; do echo "==SCAI:$e=="; cat ${job.job}.$e 2>/dev/null; done`)
+      const parts: Record<string, string> = {}
+      let key = ''
+      for (const line of out.split('\n')) {
+        const m = /^==SCAI:(\w+)==$/.exec(line.trim())
+        if (m) { key = m[1]; parts[key] = ''; continue }
+        if (key) parts[key] += line + '\n'
+      }
+      let src = 'geom'
+      let fs = parseGeomFrames(parts.geom || '')
+      const ts = parseTsFrames(parts.ts || '')
+      if (ts.length > fs.length) { fs = ts; src = 'ts' }
+      if (fs.length === 0) { const cf = parseCellFrames(parts.cell || ''); if (cf.length) { fs = cf; src = 'cell' } }
+      setSource(fs.length ? src : '')
       // 旋转中心 = 晶胞中心 (a+b+c)/2，避免结构偏离原点时旋转甩出视野。
       const target = targetRef.current
       if (fs.length && target && fs[0].cell && fs[0].cell.length >= 3) {
@@ -290,7 +316,7 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={() => setPlay(p => !p)} disabled={frames.length < 2}>{play ? '暂停' : '播放'}</button>
-        <span>帧 {frame + 1} / {frames.length || '-'}</span>
+        <span>帧 {frame + 1} / {frames.length || '-'}{source ? `（来源 .${source}）` : ''}</span>
         <button onClick={() => setFrame(fr => Math.max(0, fr - 1))} disabled={frame === 0}>上一帧</button>
         <button onClick={() => setFrame(fr => Math.min(frames.length - 1, fr + 1))} disabled={frame >= frames.length - 1}>下一帧</button>
         <button onClick={load}>重新加载</button>
@@ -309,7 +335,7 @@ export function StructureViewer(props: { job: StructJob | null; onClose?: () => 
       <input type="range" min={0} max={Math.max(0, frames.length - 1)} value={frame} onChange={e => setFrame(Number(e.target.value))} disabled={frames.length < 2} style={{ width: '100%' }} />
       {error && <div style={{ color: '#f85149' }}>错误: {error}</div>}
       {loading && <div style={{ opacity: 0.7 }}>加载中…</div>}
-      {!loading && frames.length === 0 && <div style={{ opacity: 0.7 }}>未找到结构帧（没有 .geom，也读不到 .cell）</div>}
+      {!loading && frames.length === 0 && <div style={{ opacity: 0.7 }}>未找到结构帧（该作业没有 .geom / .ts，也读不到 .cell；dry run 或仅单点计算的作业通常只有 1 帧）</div>}
       <div ref={mountRef} style={{ width: '100%', height: 480, marginTop: 8, cursor: 'grab' }} />
     </div>
   )
